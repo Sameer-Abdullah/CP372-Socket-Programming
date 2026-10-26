@@ -19,8 +19,12 @@ import os
 # Global Variables
 num_clients_active = 0    # Track number of clients active at once (Max of 3)
 num_clients_total = 0     # Tracks the total connections made to the server
-client_lock = threading.Lock()   # Prevents multiple threads from changing shared client data at the same time
 
+
+
+
+client_lock = threading.Lock()   # Prevents multiple threads from changing shared client data at the same time
+client_condition = threading.Condition(client_lock)
 client_cache = {}               # Used to store each clients information
 
 # Sends messages to the client with the message type and length
@@ -77,7 +81,12 @@ def HandleClient(client_socket, client_name):
                 break 
             elif decoded_data == "status" or decoded_data == "Status":
                 with client_lock:
-                    response = str(client_cache)
+                    response = ""
+                    for name, info in client_cache.items():
+                            response += f"{name}:\n"
+                            response += f"    Address: {info['address']}\n"
+                            response += f"    Connected: {info['Connected']}\n"
+                            response += f"    Disconnected: {info['Disconnected']}\n\n"
             elif decoded_data == "list" or decoded_data == "List":
                 response = str(os.listdir(".")) 
                 file_selection = True
@@ -92,7 +101,7 @@ def HandleClient(client_socket, client_name):
                 SendMessage(client_socket, response ,message_type = "ERR")
                 continue
             else:
-                response = decoded_data + " ACK"           
+                response = "Server Response: " + decoded_data + " ACK"           
 
         
 
@@ -101,9 +110,10 @@ def HandleClient(client_socket, client_name):
             SendMessage(client_socket, response)  
 
     finally:
-        with client_lock:
+        with client_condition:
             num_clients_active -= 1         # keeps  track of exiting clients
-            client_cache[client_name]["Disconnected"]= datetime.now() 
+            client_cache[client_name]["Disconnected"]= datetime.now().strftime("%Y-%m-%d %H:%M:%S") 
+            client_condition.notify()
         if client_reader != None:
             client_reader.close()    
         client_socket.close()
@@ -112,14 +122,13 @@ def HandleClient(client_socket, client_name):
 
 # Starts the server, accepts clients, and uses threads to handle multiple clients
 def main():
-    global num_clients_total, num_clients_active
-    
+    global num_clients_total, num_clients_active, client_name, client_address, client_socket
+
     # Creates a TCP socket and stores it in server
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM) 
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
     # Assigns IP address and Port 5000
     server.bind(("127.0.0.1", 5000))
-
 
     server.listen()
     print("Server is Online...")
@@ -127,34 +136,32 @@ def main():
     while True:
         client_socket, client_address = server.accept()         # Accepts new clients
         print("Client Address: ", client_address)
-        num_clients_total += 1                                   # keeps count of number of clients
-        client_name = "Client" + str(num_clients_total).zfill(2)                                  
+        num_clients_total += 1                                  # keeps count of number of clients
+        client_name = "Client" + str(num_clients_total).zfill(2)
 
+        # Uses a condition to limit active connections to 3 clients
+        with client_condition:
+            while num_clients_active >= 3:
+                client_condition.wait()
 
-        # Uses a lock to limit active connections to 3 clients
+            num_clients_active += 1
+
+        # Creates a thread for the accepted client
+        thread = threading.Thread(
+            target=HandleClient,
+            args=(client_socket, client_name)
+        )
+
+        # Stores client information
         with client_lock:
-            if num_clients_active >= 3:
-                server_full = True
-            else:
-                server_full = False
-                num_clients_active += 1
+            client_cache[client_name] = {
+                "address": client_address,
+                "Connected": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "Disconnected": None
+            }
 
-         # sends client server full message      
-        if server_full:                       
-            server_capacity = "Server currently at full capacity"
-            SendMessage(client_socket, server_capacity, "ERR")
-            print("Currently at full capacity")
-            client_socket.close()           # Closes the rejected client's connection
-        else:                                # allows client 
-            thread = threading.Thread(target = HandleClient , args=(client_socket, client_name))    # Creates a separate thread to handle each client
-            with client_lock:
-                client_cache[client_name] = {
-                    "Connected": datetime.now(),
-                    "Disconnected": None
-                }
-            thread.start()
+        thread.start()
 
-        
 
 if __name__ == "__main__":
     main()
